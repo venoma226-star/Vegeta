@@ -10,7 +10,7 @@ import threading
 # ---------------- CONFIG ----------------
 TOKEN = os.environ.get("TOKEN")
 
-CHANNEL_ID = 1448181797786750988
+CHANNEL_ID = 1448207122352570501
 AUTHORIZED_USER = 1355140133661184221
 
 intents = nextcord.Intents.default()
