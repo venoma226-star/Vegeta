@@ -1,13 +1,28 @@
 import os
+import threading
 import discord
 from discord.ext import commands
 from discord import app_commands
+from flask import Flask
 
-# 🔧 CONFIG
+# ================== FLASK (KEEP ALIVE) ==================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is alive."
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+threading.Thread(target=run_flask).start()
+
+# ================== CONFIG ==================
 VANITY_TEXT = ".gg/xruqjytycq"
 ROLE_ID = 1454892024410017854
 LOG_CHANNEL_ID = 1455937616120778844
 
+# ================== DISCORD ==================
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
@@ -16,12 +31,13 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ================== READY ==================
 @bot.event
 async def on_ready():
     await bot.tree.sync()
     print(f"🟢 Logged in as {bot.user}")
 
-# 🔁 Vanity status logic (unchanged)
+# ================== VANITY STATUS HANDLER ==================
 @bot.event
 async def on_presence_update(before, after):
     if not after or not after.guild:
@@ -32,9 +48,10 @@ async def on_presence_update(before, after):
     role = guild.get_role(ROLE_ID)
     log_channel = guild.get_channel(LOG_CHANNEL_ID)
 
-    if role is None:
+    if not role:
         return
 
+    # Find custom status
     custom_status = None
     for activity in after.activities:
         if activity.type == discord.ActivityType.custom:
@@ -46,8 +63,9 @@ async def on_presence_update(before, after):
     had_role = role in member.roles
 
     try:
+        # ➕ Vanity added
         if has_vanity and not had_role:
-            await member.add_roles(role)
+            await member.add_roles(role, reason="Vanity status detected")
 
             embed = discord.Embed(
                 description=(
@@ -64,30 +82,39 @@ async def on_presence_update(before, after):
                 icon_url=guild.icon.url if guild.icon else None
             )
 
+            # DM user
             try:
                 await member.send(embed=embed)
             except:
                 pass
 
+            # Log channel
             if log_channel:
                 await log_channel.send(embed=embed)
 
+        # ➖ Vanity removed
         elif not has_vanity and had_role:
-            await member.remove_roles(role)
+            await member.remove_roles(role, reason="Vanity status removed")
 
     except Exception as e:
         print("Error:", e)
 
-# ✨ /vanity command
+# ================== /vanity COMMAND ==================
 @bot.tree.command(name="vanity", description="Show vanity status reward info")
 async def vanity(interaction: discord.Interaction):
     embed = discord.Embed(
         description="**put `.gg/xRuqjytyCQ` in your status for pic n gif perms**",
         color=discord.Color.dark_grey()
     )
+
+    embed.set_author(
+        name="Vanity Access",
+        icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+    )
+
     await interaction.response.send_message(embed=embed)
 
-# 🔊 /join command (SILENT)
+# ================== /join COMMAND (SILENT VC) ==================
 @bot.tree.command(name="join", description="Bot joins your voice channel and stays idle")
 async def join(interaction: discord.Interaction):
     if not interaction.user.voice or not interaction.user.voice.channel:
@@ -96,17 +123,18 @@ async def join(interaction: discord.Interaction):
             ephemeral=True
         )
 
-    channel = interaction.user.voice.channel
-
     if interaction.guild.voice_client:
         return await interaction.response.send_message(
             "⚠️ I'm already in a voice channel.",
             ephemeral=True
         )
 
+    channel = interaction.user.voice.channel
     await channel.connect()
+
     await interaction.response.send_message(
         f"🖤 Joined **{channel.name}** and chilling 24/7."
     )
 
+# ================== START BOT ==================
 bot.run(os.getenv("DISCORD_TOKEN"))
