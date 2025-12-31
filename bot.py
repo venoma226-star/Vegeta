@@ -15,7 +15,7 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=10000)
 
-threading.Thread(target=run_flask).start()
+threading.Thread(target=run_flask, daemon=True).start()
 
 # ================== CONFIG ==================
 VANITY_TEXT = ".gg/xruqjytycq"
@@ -51,7 +51,7 @@ async def on_presence_update(before, after):
     if not role:
         return
 
-    # Find custom status
+    # Get custom status
     custom_status = None
     for activity in after.activities:
         if activity.type == discord.ActivityType.custom:
@@ -102,6 +102,8 @@ async def on_presence_update(before, after):
 # ================== /vanity COMMAND ==================
 @bot.tree.command(name="vanity", description="Show vanity status reward info")
 async def vanity(interaction: discord.Interaction):
+    await interaction.response.defer()
+
     embed = discord.Embed(
         description="**put `.gg/xRuqjytyCQ` in your status for pic n gif perms**",
         color=discord.Color.dark_grey()
@@ -112,19 +114,21 @@ async def vanity(interaction: discord.Interaction):
         icon_url=interaction.guild.icon.url if interaction.guild.icon else None
     )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
-# ================== /join COMMAND (SILENT VC) ==================
+# ================== /join COMMAND ==================
 @bot.tree.command(name="join", description="Bot joins your voice channel and stays idle")
 async def join(interaction: discord.Interaction):
+    await interaction.response.defer()
+
     if not interaction.user.voice or not interaction.user.voice.channel:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "❌ You must be in a voice channel.",
             ephemeral=True
         )
 
     if interaction.guild.voice_client:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "⚠️ I'm already in a voice channel.",
             ephemeral=True
         )
@@ -132,7 +136,7 @@ async def join(interaction: discord.Interaction):
     channel = interaction.user.voice.channel
     await channel.connect()
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"🖤 Joined **{channel.name}** and chilling 24/7."
     )
 
