@@ -94,26 +94,29 @@ def get_time_remaining(end_time):
     return " ".join(parts)
 
 # ===================== GIVEAWAY COMMAND =====================
-@bot.tree.command(name="giveaway", description="Start a giveaway")
+@bot.tree.command(name="giveaway", description="Start a giveaway with a forced winner")
 @app_commands.describe(
     header="Header text",
     points="Points separated by ;",
     emoji="Entry emoji",
     duration="Giveaway duration (number)",
     unit="Unit: s/m/h/d",
-    winner="Forced winner",
+    winner="Choose the member who will win",
     winners_count="Number of winners (default 1)"
 )
 async def giveaway(interaction: discord.Interaction, header: str, points: str, emoji: str,
                    duration: int, unit: str, winner: discord.Member, winners_count: int = 1):
-
+    
+    # ✅ Defer interaction immediately to avoid "application did not respond"
     await interaction.response.defer(ephemeral=True)
+    
+    # calculate end time
     end_time = datetime.utcnow() + parse_duration(duration, unit)
     points_list = points.split(";")
     giveaway_id = str(uuid.uuid4())
     checksum = make_checksum(winner.id, interaction.guild.id, end_time.isoformat())
 
-    # initial embed
+    # create embed
     embed = discord.Embed(title="🎉 " + header, color=discord.Color.green())
     embed.description = f"{format_points(points_list)}\n\n" \
                         f"🏆 Winners: {winners_count}\n" \
@@ -124,7 +127,7 @@ async def giveaway(interaction: discord.Interaction, header: str, points: str, e
     message = await interaction.channel.send(embed=embed)
     await message.add_reaction(emoji)
 
-    # store in DB
+    # store giveaway in DB
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
             INSERT INTO giveaways (id, guild_id, channel_id, message_id, header, points, emoji, winner_id, winners_count, end_time, status, checksum, created_at)
@@ -134,6 +137,7 @@ async def giveaway(interaction: discord.Interaction, header: str, points: str, e
               end_time.isoformat(), "active", checksum, datetime.utcnow().isoformat()))
         await db.commit()
 
+    # ✅ Send follow-up to confirm creation
     await interaction.followup.send(f"Giveaway created! Winner: {winner.mention}", ephemeral=True)
 
     # dynamic countdown
@@ -149,8 +153,8 @@ async def giveaway(interaction: discord.Interaction, header: str, points: str, e
         try:
             await message.edit(embed=embed)
         except:
-            pass  # message might be deleted
-        await asyncio.sleep(30)  # update every 30s
+            pass  # message deleted
+        await asyncio.sleep(5)  # update every 5 seconds for smooth countdown
 
     # finalize giveaway
     async with aiosqlite.connect(DB_FILE) as db:
