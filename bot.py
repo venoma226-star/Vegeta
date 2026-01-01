@@ -9,178 +9,167 @@ from discord import app_commands
 from discord.ext import commands
 
 from flask import Flask
-import aiosqlite
 from threading import Thread
+import aiosqlite
 
-# ===================== FLASK (RENDER KEEPALIVE) =====================
+# ================= FLASK =================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is alive"
+    return "Alive"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
-Thread(target=run_flask).start()
+Thread(target=run_flask, daemon=True).start()
 
-# ===================== DISCORD BOT =====================
+# ================= BOT =================
 intents = discord.Intents.default()
 intents.reactions = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===================== DATABASE =====================
 DB_FILE = "giveaways.db"
 
+# ================= DB INIT =================
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
         CREATE TABLE IF NOT EXISTS giveaways (
             id TEXT PRIMARY KEY,
-            guild_id INTEGER NOT NULL,
-            channel_id INTEGER NOT NULL,
+            channel_id INTEGER,
             message_id INTEGER,
-
-            header TEXT NOT NULL,
+            header TEXT,
             points TEXT,
-            emoji TEXT NOT NULL,
-
-            winner_id INTEGER NOT NULL,
-            winners_count INTEGER NOT NULL,
-
-            end_time TEXT NOT NULL,
-            status TEXT NOT NULL,
-
-            checksum TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
+            emoji TEXT,
+            winner_id INTEGER,
+            winners_count INTEGER,
+            end_time TEXT,
+            checksum TEXT,
+            status TEXT
+        )
         """)
         await db.commit()
 
 asyncio.run(init_db())
 
-# ===================== HELPERS =====================
-def make_checksum(winner_id, guild_id, end_time):
-    raw = f"{winner_id}{guild_id}{int(datetime.fromisoformat(end_time).timestamp())}"
+# ================= HELPERS =================
+def checksum(winner_id, end_time):
+    raw = f"{winner_id}{end_time}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
-def parse_duration(amount, unit):
-    if unit == "s":
-        return timedelta(seconds=amount)
-    if unit == "m":
-        return timedelta(minutes=amount)
-    if unit == "h":
-        return timedelta(hours=amount)
-    if unit == "d":
-        return timedelta(days=amount)
-    return timedelta(minutes=amount)
+def parse_duration(n, u):
+    return {
+        "s": timedelta(seconds=n),
+        "m": timedelta(minutes=n),
+        "h": timedelta(hours=n),
+        "d": timedelta(days=n)
+    }.get(u, timedelta(minutes=n))
 
-def format_points(points):
-    return "\n".join(f"• {p}" for p in points)
-
-def get_time_remaining(end_time):
-    delta = end_time - datetime.utcnow()
+def time_left(end):
+    delta = end - datetime.utcnow()
     if delta.total_seconds() <= 0:
         return "0s"
-    days, remainder = divmod(delta.total_seconds(), 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    parts = []
-    if days > 0: parts.append(f"{int(days)}d")
-    if hours > 0: parts.append(f"{int(hours)}h")
-    if minutes > 0: parts.append(f"{int(minutes)}m")
-    parts.append(f"{int(seconds)}s")
-    return " ".join(parts)
+    m, s = divmod(int(delta.total_seconds()), 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    return f"{d}d {h}h {m}m {s}s"
 
-# ===================== GIVEAWAY COMMAND =====================
-@bot.tree.command(name="giveaway", description="Start a giveaway with a forced winner")
-@app_commands.describe(
-    header="Header text",
-    points="Points separated by ;",
-    emoji="Entry emoji",
-    duration="Giveaway duration (number)",
-    unit="Unit: s/m/h/d",
-    winner="Choose the member who will win",
-    winners_count="Number of winners (default 1)"
-)
-async def giveaway(interaction: discord.Interaction, header: str, points: str, emoji: str,
-                   duration: int, unit: str, winner: discord.Member, winners_count: int = 1):
-    
-    # ✅ Defer interaction immediately to avoid "application did not respond"
-    await interaction.response.defer(ephemeral=True)
-    
-    # calculate end time
-    end_time = datetime.utcnow() + parse_duration(duration, unit)
-    points_list = points.split(";")
-    giveaway_id = str(uuid.uuid4())
-    checksum = make_checksum(winner.id, interaction.guild.id, end_time.isoformat())
-
-    # create embed
-    embed = discord.Embed(title="🎉 " + header, color=discord.Color.green())
-    embed.description = f"{format_points(points_list)}\n\n" \
-                        f"🏆 Winners: {winners_count}\n" \
-                        f"🎭 Entry Emoji: {emoji}\n\n" \
-                        f"⏳ Time Remaining: {get_time_remaining(end_time)}\n\n" \
-                        f"React with {emoji} to enter!"
-
-    message = await interaction.channel.send(embed=embed)
-    await message.add_reaction(emoji)
-
-    # store giveaway in DB
+# ================= BACKGROUND TASK =================
+async def run_giveaway(gid):
     async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("""
-            INSERT INTO giveaways (id, guild_id, channel_id, message_id, header, points, emoji, winner_id, winners_count, end_time, status, checksum, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (giveaway_id, interaction.guild.id, interaction.channel.id, message.id,
-              header, ";".join(points_list), emoji, winner.id, winners_count,
-              end_time.isoformat(), "active", checksum, datetime.utcnow().isoformat()))
+        cur = await db.execute("SELECT * FROM giveaways WHERE id=?", (gid,))
+        g = await cur.fetchone()
+        if not g:
+            return
+
+        channel = bot.get_channel(g[1])
+        try:
+            message = await channel.fetch_message(g[2])
+        except:
+            return
+
+        end_time = datetime.fromisoformat(g[8])
+
+        while datetime.utcnow() < end_time:
+            embed = message.embeds[0]
+            embed.description = embed.description.split("⏳")[0] + \
+                f"⏳ Time Remaining: {time_left(end_time)}"
+            try:
+                await message.edit(embed=embed)
+            except:
+                pass
+            await asyncio.sleep(5)
+
+        # integrity check
+        if checksum(g[6], g[8]) != g[9]:
+            await channel.send("❌ Giveaway cancelled (data integrity loss).")
+            await db.execute("UPDATE giveaways SET status='cancelled' WHERE id=?", (gid,))
+            await db.commit()
+            return
+
+        winner = await bot.fetch_user(g[6])
+        await channel.send(f"🎉 Giveaway Ended! Winner: {winner.mention}")
+        await db.execute("UPDATE giveaways SET status='ended' WHERE id=?", (gid,))
         await db.commit()
 
-    # ✅ Send follow-up to confirm creation
-    await interaction.followup.send(f"Giveaway created! Winner: {winner.mention}", ephemeral=True)
+# ================= SLASH COMMAND =================
+@bot.tree.command(name="giveaway", description="Create a forced-winner giveaway")
+async def giveaway(
+    interaction: discord.Interaction,
+    header: str,
+    points: str,
+    emoji: str,
+    duration: int,
+    unit: str,
+    winner: discord.Member,
+    winners_count: int = 1
+):
+    # ✅ RESPOND IMMEDIATELY
+    await interaction.response.send_message(
+        "✅ Giveaway created successfully.",
+        ephemeral=True
+    )
 
-    # dynamic countdown
-    while True:
-        remaining = end_time - datetime.utcnow()
-        if remaining.total_seconds() <= 0:
-            break
-        embed.description = f"{format_points(points_list)}\n\n" \
-                            f"🏆 Winners: {winners_count}\n" \
-                            f"🎭 Entry Emoji: {emoji}\n\n" \
-                            f"⏳ Time Remaining: {get_time_remaining(end_time)}\n\n" \
-                            f"React with {emoji} to enter!"
-        try:
-            await message.edit(embed=embed)
-        except:
-            pass  # message deleted
-        await asyncio.sleep(5)  # update every 5 seconds for smooth countdown
+    end = datetime.utcnow() + parse_duration(duration, unit)
+    gid = str(uuid.uuid4())
 
-    # finalize giveaway
+    embed = discord.Embed(title=f"🎉 {header}", color=discord.Color.green())
+    embed.description = (
+        "\n".join(f"• {p.strip()}" for p in points.split(";")) +
+        f"\n\n🏆 Winners: {winners_count}\n"
+        f"🎭 Emoji: {emoji}\n\n"
+        f"⏳ Time Remaining: {time_left(end)}"
+    )
+
+    msg = await interaction.channel.send(embed=embed)
+    await msg.add_reaction(emoji)
+
     async with aiosqlite.connect(DB_FILE) as db:
-        async with db.execute("SELECT * FROM giveaways WHERE id = ?", (giveaway_id,)) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                return
-            # validate checksum
-            if make_checksum(row[7], row[1], row[9]) != row[11]:
-                await interaction.channel.send("❌ Giveaway cancelled due to data integrity loss.")
-                await db.execute("UPDATE giveaways SET status=? WHERE id=?", ("cancelled", giveaway_id))
-                await db.commit()
-                return
-            winner_user = interaction.guild.get_member(row[7])
-            await interaction.channel.send(f"🎉 Giveaway ended! Winner: {winner_user.mention}")
-            await db.execute("UPDATE giveaways SET status=? WHERE id=?", ("ended", giveaway_id))
-            await db.commit()
+        await db.execute("""
+        INSERT INTO giveaways VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            gid,
+            interaction.channel.id,
+            msg.id,
+            header,
+            points,
+            emoji,
+            winner.id,
+            winners_count,
+            end.isoformat(),
+            checksum(winner.id, end.isoformat()),
+            "active"
+        ))
+        await db.commit()
 
-# ===================== START BOT =====================
+    # ✅ START BACKGROUND TASK
+    bot.loop.create_task(run_giveaway(gid))
+
+# ================= READY =================
 @bot.event
 async def on_ready():
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands.")
-    except Exception as e:
-        print("Failed to sync commands:", e)
-    print(f"Logged in as {bot.user}!")
+    await bot.tree.sync()
+    print(f"Logged in as {bot.user}")
 
 bot.run(os.environ["DISCORD_TOKEN"])
